@@ -1,7 +1,7 @@
 mod options;
 
 pub use options::{
-    ActivityOptions, ChildWorkflowOptions, LocalActivityOptions, Signal, SignalData,
+    ActivityOptions, ChildWorkflowOptions, LocalActivityOptions, Signal, SignalData, QueryData, QueryHandler,
     SignalWorkflowOptions,
 };
 
@@ -302,6 +302,15 @@ impl WfContext {
         let (tx, rx) = mpsc::unbounded_channel();
         self.send(RustWfCmd::SubscribeSignal(signal_name.into(), tx));
         DrainableSignalStream(UnboundedReceiverStream::new(rx))
+    }
+
+    /// Register a query handler for the given query type
+    pub fn register_query_handler<Q, F>(&self, query_type: Q, handler: F)
+    where
+        Q: Into<String>,
+        F: Fn(QueryData) -> Result<Payload, anyhow::Error> + Send + 'static,
+    {
+        self.send(RustWfCmd::RegisterQueryHandler(query_type.into(), Box::new(handler)));
     }
 
     /// Force a workflow task failure (EX: in order to retry on non-sticky queue)

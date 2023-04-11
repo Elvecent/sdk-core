@@ -1,6 +1,6 @@
 use crate::{
-    conversions::anyhow_to_fail, workflow_context::WfContextSharedData, CancellableID, RustWfCmd,
-    SignalData, TimerResult, UnblockEvent, WfContext, WfExitValue, WorkflowFunction,
+    conversions::anyhow_to_fail, workflow_context::{WfContextSharedData, QueryData}, CancellableID, RustWfCmd,
+    SignalData, QueryHandler, TimerResult, UnblockEvent, WfContext, WfExitValue, WorkflowFunction,
     WorkflowResult,
 };
 use anyhow::{anyhow, bail, Context as AnyhowContext, Error};
@@ -71,6 +71,7 @@ impl WorkflowFunction {
                 cancel_sender: cancel_tx,
                 child_workflow_starts: Default::default(),
                 sig_chans: Default::default(),
+                query_handlers: Default::default(),
             },
             tx,
         )
@@ -109,6 +110,8 @@ pub struct WorkflowFuture {
     child_workflow_starts: HashMap<u32, StartChildWorkflowExecution>,
     /// Maps signal IDs to channels to send down when they are signaled
     sig_chans: HashMap<String, SigChanOrBuffer>,
+    /// Maps query IDs to query implementations
+    query_handlers: HashMap<String, QueryHandler>,
 }
 
 impl WorkflowFuture {
@@ -183,8 +186,21 @@ impl WorkflowFuture {
                     Box::new(result.context("Child Workflow execution must have a result")?),
                 ))?,
                 Variant::UpdateRandomSeed(_) => (),
-                Variant::QueryWorkflow(_) => {
-                    todo!()
+                Variant::QueryWorkflow(q) => {
+                    let qt = q.query_type;
+                    let headers = q.headers;
+                    let args = q.arguments;
+
+                    let mut dat = QueryData::new(args);
+                    dat.headers = headers;
+
+                    let handler = self.query_handlers.get(&qt).ok_or_else(|| {
+                        anyhow!("Query type {} not registered on this workflow", qt)
+                    })?;
+                    // TODO: how to send the result back?
+
+                    let res = handler(dat);
+
                 }
                 Variant::CancelWorkflow(_) => {
                     // TODO: Cancel pending futures, etc
@@ -429,6 +445,9 @@ impl Future for WorkflowFuture {
                             res = self.inner.poll_unpin(cx);
                         }
                         self.sig_chans.insert(signame, SigChanOrBuffer::Chan(chan));
+                    }
+                    RustWfCmd::RegisterQueryHandler(queryname, handler) => {
+                        self.query_handlers.insert(queryname, handler);
                     }
                     RustWfCmd::ForceWFTFailure(err) => {
                         self.fail_wft(run_id, err);

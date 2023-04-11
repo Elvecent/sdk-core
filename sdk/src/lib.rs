@@ -56,7 +56,7 @@ pub use activity_context::ActContext;
 pub use temporal_client::Namespace;
 pub use workflow_context::{
     ActivityOptions, CancellableFuture, ChildWorkflow, ChildWorkflowOptions, LocalActivityOptions,
-    Signal, SignalData, SignalWorkflowOptions, WfContext,
+    Signal, SignalData, SignalWorkflowOptions, WfContext, QueryHandler
 };
 
 use crate::{
@@ -651,6 +651,7 @@ enum RustWfCmd {
     NewNonblockingCmd(workflow_command::Variant),
     SubscribeChildWorkflowCompletion(CommandSubscribeChildWorkflowCompletion),
     SubscribeSignal(String, UnboundedSender<SignalData>),
+    RegisterQueryHandler(String, QueryHandler),
 }
 
 struct CommandCreateRequest {
