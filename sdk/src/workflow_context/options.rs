@@ -324,4 +324,4 @@ impl QueryData {
 }
 
 /// A type for stored query handlers
-pub type QueryHandler = Box<dyn Fn(QueryData) -> Result<Payload, anyhow::Error> + Send>;
+pub type QueryHandler = Box<dyn Fn(QueryData) -> Option<Payload> + Send>;

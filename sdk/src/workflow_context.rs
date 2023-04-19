@@ -308,7 +308,7 @@ impl WfContext {
     pub fn register_query_handler<Q, F>(&self, query_type: Q, handler: F)
     where
         Q: Into<String>,
-        F: Fn(QueryData) -> Result<Payload, anyhow::Error> + Send + 'static,
+        F: Fn(QueryData) -> Option<Payload> + Send + 'static,
     {
         self.send(RustWfCmd::RegisterQueryHandler(query_type.into(), Box::new(handler)));
     }

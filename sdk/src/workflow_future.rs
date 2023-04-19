@@ -1,10 +1,11 @@
 use crate::{
-    conversions::anyhow_to_fail, workflow_context::{WfContextSharedData, QueryData}, CancellableID, RustWfCmd,
-    SignalData, QueryHandler, TimerResult, UnblockEvent, WfContext, WfExitValue, WorkflowFunction,
-    WorkflowResult,
+    conversions::anyhow_to_fail,
+    workflow_context::{QueryData, WfContextSharedData},
+    CancellableID, QueryHandler, RustWfCmd, SignalData, TimerResult, UnblockEvent, WfContext,
+    WfExitValue, WorkflowFunction, WorkflowResult,
 };
 use anyhow::{anyhow, bail, Context as AnyhowContext, Error};
-use crossbeam::channel::Receiver;
+use crossbeam::{channel::Receiver, queue::SegQueue};
 use futures::{future::BoxFuture, FutureExt};
 use parking_lot::RwLock;
 use std::{
@@ -15,6 +16,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+use temporal_sdk_core_protos::coresdk::workflow_commands;
 use temporal_sdk_core_protos::{
     coresdk::{
         workflow_activation::{
@@ -26,7 +28,7 @@ use temporal_sdk_core_protos::{
             request_cancel_external_workflow_execution as cancel_we, workflow_command,
             CancelChildWorkflowExecution, CancelSignalWorkflow, CancelTimer,
             CancelWorkflowExecution, CompleteWorkflowExecution, FailWorkflowExecution,
-            RequestCancelActivity, RequestCancelExternalWorkflowExecution,
+            QuerySuccess, RequestCancelActivity, RequestCancelExternalWorkflowExecution,
             RequestCancelLocalActivity, ScheduleActivity, ScheduleLocalActivity,
             StartChildWorkflowExecution, StartTimer,
         },
@@ -72,6 +74,7 @@ impl WorkflowFunction {
                 child_workflow_starts: Default::default(),
                 sig_chans: Default::default(),
                 query_handlers: Default::default(),
+                query_results: Default::default(),
             },
             tx,
         )
@@ -112,6 +115,8 @@ pub struct WorkflowFuture {
     sig_chans: HashMap<String, SigChanOrBuffer>,
     /// Maps query IDs to query implementations
     query_handlers: HashMap<String, QueryHandler>,
+    /// Query results to be send back to core
+    query_results: SegQueue<workflow_commands::QueryResult>,
 }
 
 impl WorkflowFuture {
@@ -188,19 +193,22 @@ impl WorkflowFuture {
                 Variant::UpdateRandomSeed(_) => (),
                 Variant::QueryWorkflow(q) => {
                     let qt = q.query_type;
-                    let headers = q.headers;
-                    let args = q.arguments;
 
-                    let mut dat = QueryData::new(args);
-                    dat.headers = headers;
+                    let mut dat = QueryData::new(q.arguments);
+                    dat.headers = q.headers;
 
                     let handler = self.query_handlers.get(&qt).ok_or_else(|| {
                         anyhow!("Query type {} not registered on this workflow", qt)
                     })?;
-                    // TODO: how to send the result back?
 
-                    let res = handler(dat);
+                    let wfc = workflow_commands::QueryResult {
+                        query_id: q.query_id,
+                        variant: Some(workflow_commands::query_result::Variant::Succeeded(
+                            QuerySuccess { response: handler(dat) },
+                        )),
+                    };
 
+                    self.query_results.push(wfc);
                 }
                 Variant::CancelWorkflow(_) => {
                     // TODO: Cancel pending futures, etc
@@ -491,6 +499,11 @@ impl Future for WorkflowFuture {
                         ));
                     }
                 }
+            }
+
+            // TODO: This is a bit of a hack, but it's the only way to get the query results out
+            while let Some(res) = self.query_results.pop() {
+                activation_cmds.push(workflow_command::Variant::RespondToQuery(res));
             }
 
             // TODO: deadlock detector
